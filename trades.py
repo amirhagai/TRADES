@@ -82,3 +82,77 @@ def trades_loss(model,
                                                     F.softmax(model(x_natural), dim=1))
     loss = loss_natural + beta * loss_robust
     return loss
+
+
+
+def trades_loss_both(model,
+                x_natural,
+                y,
+                optimizer,
+                step_size_linf=0.003,
+                epsilon_linf=0.031,
+                epsilon_l2=1.74,
+                perturb_steps=10,
+                beta=1.0,):
+    # define KL-loss
+    criterion_kl = nn.KLDivLoss(size_average=False)
+    model.eval()
+    batch_size = len(x_natural)
+    # generate adversarial example
+    x_adv_linf = x_natural.detach() + 0.001 * torch.randn(x_natural.shape).cuda().detach()
+
+    for _ in range(perturb_steps):
+        x_adv_linf.requires_grad_()
+        with torch.enable_grad():
+            loss_kl = criterion_kl(F.log_softmax(model(x_adv_linf), dim=1),
+                                    F.softmax(model(x_natural), dim=1))
+        grad = torch.autograd.grad(loss_kl, [x_adv_linf])[0]
+        x_adv_linf = x_adv_linf.detach() + step_size_linf * torch.sign(grad.detach())
+        x_adv_linf = torch.min(torch.max(x_adv_linf, x_natural - epsilon_linf), x_natural + epsilon_linf)
+        x_adv_linf = torch.clamp(x_adv_linf, 0.0, 1.0)
+    elif distance == 'l_2':
+
+    delta = 0.001 * torch.randn(x_natural.shape).cuda().detach()
+    delta = Variable(delta.data, requires_grad=True)
+
+    # Setup optimizers
+    optimizer_delta = optim.SGD([delta], lr=epsilon_l2 / perturb_steps * 2)
+
+    for _ in range(perturb_steps):
+        adv = x_natural + delta
+
+        # optimize
+        optimizer_delta.zero_grad()
+        with torch.enable_grad():
+            loss = (-1) * criterion_kl(F.log_softmax(model(adv), dim=1),
+                                        F.softmax(model(x_natural), dim=1))
+        loss.backward()
+        # renorming gradient
+        grad_norms = delta.grad.view(batch_size, -1).norm(p=2, dim=1)
+        delta.grad.div_(grad_norms.view(-1, 1, 1, 1))
+        # avoid nan or inf if gradient is 0
+        if (grad_norms == 0).any():
+            delta.grad[grad_norms == 0] = torch.randn_like(delta.grad[grad_norms == 0])
+        optimizer_delta.step()
+
+        # projection
+        delta.data.add_(x_natural)
+        delta.data.clamp_(0, 1).sub_(x_natural)
+        delta.data.renorm_(p=2, dim=0, maxnorm=epsilon_l2)
+    x_adv_l2 = Variable(x_natural + delta, requires_grad=False)
+
+    model.train()
+
+    x_adv_linf = Variable(torch.clamp(x_adv_linf, 0.0, 1.0), requires_grad=False)
+    x_adv_l2 = Variable(torch.clamp(x_adv_l2, 0.0, 1.0), requires_grad=False)
+    # zero gradient
+    optimizer.zero_grad()
+    # calculate robust loss
+    logits = model(x_natural)
+    loss_natural = F.cross_entropy(logits, y)
+    loss_robust_linf = (1.0 / batch_size) * criterion_kl(F.log_softmax(model(x_adv_linf), dim=1),
+                                                    F.softmax(model(x_natural), dim=1))
+    loss_robust_l2 = (1.0 / batch_size) * criterion_kl(F.log_softmax(model(x_adv_l2), dim=1),
+                                                    F.softmax(model(x_natural), dim=1))
+    loss = loss_natural + beta * loss_robust_linf + beta * loss_robust_l2
+    return loss
