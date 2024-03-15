@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 import torch.optim as optim
 
-
+#test
 def squared_l2_norm(x):
     flattened = x.view(x.unsqueeze(0).shape[0], -1)
     return (flattened ** 2).sum(1)
